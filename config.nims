@@ -15,6 +15,8 @@ task test_postgres, "Run PostgreSQL test suite":
   # Skip PostgreSQL tests as they require a running PostgreSQL server
   rmFile("tests/forum_model_postgres.nim")
   rmFile("tests/model_postgre.nim")
+  # switch("passL",gorge("pkgconf --libs libpq"))
+  # switch("define","nimDebugDlOpen")
 
   exec "nim c -r -d:postgre tests/tfeature"
   exec "nim c -r -d:postgre tests/tcommon"
@@ -27,3 +29,7 @@ task buildexamples, "Build examples: chat and forum":
   selfExec "c examples/forum/forum"
   selfExec "c examples/forum/forumproto"
   selfExec "c examples/tweeter/src/tweeter"
+# begin Nimble config (version 2)
+when withDir(thisDir(), system.fileExists("nimble.paths")):
+  include "nimble.paths"
+# end Nimble config

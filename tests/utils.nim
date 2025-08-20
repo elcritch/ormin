@@ -1,4 +1,4 @@
-import db_connector/db_common, strutils, strformat, re
+import db_connector/db_common, strutils, strformat, nre
 from db_connector/db_postgres import nil
 from db_connector/db_sqlite import nil
 
@@ -7,9 +7,9 @@ type DbConn = db_postgres.DbConn | db_sqlite.DbConn
 iterator tablePairs(sqlFile: string): tuple[name, model: string] =
   let f = readFile(sqlFile)
   for m in f.split(';'):
-    if m.strip() != "" and
-       m =~ re"\n*create\s+table(\s+if\s+not\s+exists)?\s+(\w+)":
-      yield (matches[1], m)
+    let res = m.match(re"\n*create\s+table(\s+if\s+not\s+exists)?\s+(\w+)")
+    if m.strip() != "" and res.isSome:
+      yield (res.get.captures[1], m)
 
 proc createTable*(db: DbConn; sqlFile: string) =
   for _, m in tablePairs(sqlFile):

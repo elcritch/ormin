@@ -23,3 +23,5 @@ examples/tweeter/src/tweeterdeps/
 deps/
 nim.cfg
 .nimcache
+nimble.develop
+nimble.paths
