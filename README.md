@@ -130,7 +130,7 @@ let threadNim = query:
   select thread(id, name)
   produce nim
 
-# Single row via returning
+# Single row value returning
 let newId = query:
   insert thread(name = ?"topic")
   returning id

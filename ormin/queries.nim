@@ -499,7 +499,7 @@ proc generateRoutine(name: NimNode, q: QueryBuilder;
     yld.add newCall("add", ident"result", ident"res")
 
   let whileStmt = newTree(nnkWhileStmt,
-    newCall(bindSym"stepQuery", ident"db", prepStmt, newLit 1), yld)
+    newCall(bindSym"stepQuery", ident"db", prepStmt, newLit true), yld)
   body.add whileStmt
   body.add newCall(bindSym"stopQuery", ident"db", prepStmt)
 
@@ -921,7 +921,7 @@ proc queryImpl(q: QueryBuilder; body: NimNode; attempt, produceJson: bool): NimN
   else:
     body.add newTree(nnkDiscardStmt, newEmptyNode())
 
-  template ifStmt2(prepStmt, returnsData, action) {.dirty.} =
+  template ifStmt2(prepStmt, returnsData: bool; action) {.dirty.} =
     bind stepQuery
     bind stopQuery
     bind dbError
@@ -932,7 +932,7 @@ proc queryImpl(q: QueryBuilder; body: NimNode; attempt, produceJson: bool): NimN
       stopQuery(db, prepStmt)
       dbError(db)
 
-  template ifStmt1(prepStmt, returnsData, action) {.dirty.} =
+  template ifStmt1(prepStmt, returnsData: bool; action) {.dirty.} =
     bind stepQuery
     bind stopQuery
     if stepQuery(db, prepStmt, returnsData):
@@ -942,7 +942,7 @@ proc queryImpl(q: QueryBuilder; body: NimNode; attempt, produceJson: bool): NimN
   template whileStmt(prepStmt, res, it, action) {.dirty.} =
     bind stepQuery
     bind stopQuery
-    while stepQuery(db, prepStmt, 1):
+    while stepQuery(db, prepStmt, true):
       action
       add res, it
     stopQuery(db, prepStmt)
@@ -953,7 +953,7 @@ proc queryImpl(q: QueryBuilder; body: NimNode; attempt, produceJson: bool): NimN
     bind getLastId
     bind dbError
     var insertedId = -1
-    if stepQuery(db, prepStmt, 0):
+    if stepQuery(db, prepStmt, false):
       insertedId = getLastId(db, prepStmt)
       stopQuery(db, prepStmt)
     else:

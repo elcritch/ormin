@@ -243,6 +243,8 @@ suite "query":
     let res = query:
       select person(id, name, password, email, salt, status)
       limit 1
+    static:
+      echo "LIMIT TEST: ", typeof(res)
     check res == persondata[id - 1]
 
   test "offset":
