@@ -661,3 +661,21 @@ suite "query":
       select person(id)
       where id == ?id2
     check res == exp2
+
+    test "transaction example":
+      # Insert and then select within a single transaction block.
+      let id = 21
+      let (newId, selected) = query:
+        transaction:
+          insert person(id = ?id, name = "txuser", password = "fake", email = "tx@example.com", salt = "salt21", status = "ok")
+          returning id
+          select person(id)
+          where id == ?id
+      check:
+        newId == id
+        selected == [id]
+      # Verify the inserted row is visible after the transaction completes.
+      let outside = query:
+        select person(id)
+        where id == ?id
+      check outside == [id]
