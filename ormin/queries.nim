@@ -1073,20 +1073,16 @@ macro query*(body: untyped): untyped =
   ## Support single or multiple queries within one `query:` block.
   ## When multiple top-level `select/insert/update/replace/delete` commands
   ## are present, execute each as an independent query and return a tuple
-  ## with their results in order. Example:
-  ##   let res = query:
-  ##     select person(name) where id == ?id1
-  ##     select person(id)   where id == ?id2
-  ##   # res == (@["john3"], @[4])
+  ## with their results in order. Additionally supports `transaction:` blocks
+  ## that group nested queries into a single DB transaction and aggregate
+  ## their results similarly.
 
   expectKind(body, nnkStmtList)
   expectMinLen(body, 1)
 
-  # Partition the body into groups, each starting with a new top-level
-  # query command (select/insert/update/replace/delete). The remaining
-  # clauses like where/limit/groupby/etc. stay attached to the current group.
-  var groups: seq[NimNode] = @[]
-  var current = newStmtList()
+  type UnitKind = enum ukGroup, ukTransaction
+  type Unit = tuple[kind: UnitKind, node: NimNode]
+
   proc isQueryStart(n: NimNode): bool {.compileTime.} =
     if n.kind in nnkCallKinds and n.len > 0:
       let h = n[0]
@@ -1096,55 +1092,131 @@ macro query*(body: untyped): untyped =
           return true
     return false
 
-  for b in body:
-    if b.kind != nnkCommand:
-      macros.error("illformed query", b)
-    if isQueryStart(b):
-      if current.len > 0:
-        groups.add current
-        current = newStmtList()
-    current.add b
-  if current.len > 0:
-    groups.add current
-
-  if groups.len <= 1:
-    var q = newQueryBuilder()
-    result = queryImpl(q, body, false, false)
-  else:
-    # Evaluate each group in order. Only include groups that produce
-    # a value in the aggregated result; execute bare statements but
-    # do not include them in the returned tuple. If only one group
-    # produces a value, return that value directly (not a 1-tuple).
-    var stmts = newStmtList()
-    var tupleElems: seq[NimNode] = @[]
-    for g in groups:
+  # Analyze whether a body returns a value when lowered,
+  # accounting for nested transactions and multi-groups.
+  proc bodyReturnsValue(bd: NimNode): bool {.compileTime.} =
+    var hasVal = false
+    var current = newStmtList()
+    for b in bd:
+      if b.kind notin nnkCallKinds:
+        macros.error("illformed query", b)
+      let head = $b[0]
+      let op = head.toLowerAscii()
+      if op == "transaction":
+        # Flush current group
+        if current.len > 0:
+          var q = newQueryBuilder()
+          discard queryImpl(q, current, false, false)
+          if q.retType.len > 0 or q.kind == qkInsertReturning:
+            hasVal = true
+          current = newStmtList()
+        # Nested transaction
+        expectLen b, 2
+        if bodyReturnsValue(b[1]): hasVal = true
+      elif isQueryStart(b):
+        if current.len > 0:
+          var q = newQueryBuilder()
+          discard queryImpl(q, current, false, false)
+          if q.retType.len > 0 or q.kind == qkInsertReturning:
+            hasVal = true
+          current = newStmtList()
+        current.add b
+      else:
+        current.add b
+    if current.len > 0:
       var q = newQueryBuilder()
-      let expr = queryImpl(q, g, false, false)
+      discard queryImpl(q, current, false, false)
+      if q.retType.len > 0 or q.kind == qkInsertReturning:
+        hasVal = true
+    result = hasVal
+
+  # Partition into units: regular groups and transaction blocks.
+  var units: seq[Unit] = @[]
+  var current = newStmtList()
+  for b in body:
+    if b.kind notin nnkCallKinds:
+      macros.error("illformed query", b)
+    let head = $b[0]
+    let op = head.toLowerAscii()
+    if op == "transaction":
+      if current.len > 0:
+        units.add (ukGroup, current)
+        current = newStmtList()
+      expectLen b, 2
+      expectKind b[1], nnkStmtList
+      units.add (ukTransaction, b[1])
+    elif isQueryStart(b):
+      if current.len > 0:
+        units.add (ukGroup, current)
+        current = newStmtList()
+      current.add b
+    else:
+      current.add b
+  if current.len > 0:
+    units.add (ukGroup, current)
+
+  # Lower all units, aggregating values into a tuple when needed.
+  var stmts = newStmtList()
+  var tupleElems: seq[NimNode] = @[]
+  for u in units:
+    case u.kind
+    of ukGroup:
+      var q = newQueryBuilder()
+      let expr = queryImpl(q, u.node, false, false)
       let returnsVal = q.retType.len > 0 or q.kind == qkInsertReturning
       if returnsVal:
         let tmp = genSym(nskLet, "qres")
         stmts.add newLetStmt(tmp, expr)
         tupleElems.add tmp
       else:
-        # Just execute the statement list to preserve side effects
         for i in 0 ..< expr.len:
           stmts.add expr[i]
-    if tupleElems.len == 0:
-      # Only side effects; return statements only
-      result = newStmtList()
-      for s in stmts: result.add s
-    elif tupleElems.len == 1:
-      # Return the single value directly
-      result = newTree(nnkStmtListExpr)
-      for s in stmts: result.add s
-      result.add tupleElems[0]
-    else:
-      # Return a tuple of values
-      let tup = newTree(nnkPar)
-      for e in tupleElems: tup.add e
-      result = newTree(nnkStmtListExpr)
-      for s in stmts: result.add s
-      result.add tup
+    of ukTransaction:
+      # Build the inner query expression (may or may not yield a value)
+      let innerBody = u.node
+      let innerExpr = newCall(ident"query", innerBody)
+      let hasVal = bodyReturnsValue(innerBody)
+      let tryBody = newStmtList()
+      # BEGIN
+      tryBody.add newCall(bindSym"exec", ident"db",
+                          newCall(bindSym"sql", newLit("begin transaction")))
+      if hasVal:
+        let tmp = genSym(nskLet, "tres")
+        tryBody.add newLetStmt(tmp, innerExpr)
+        # COMMIT
+        tryBody.add newCall(bindSym"exec", ident"db",
+                            newCall(bindSym"sql", newLit("commit")))
+        let exceptBody = newStmtList(
+          newCall(bindSym"exec", ident"db", newCall(bindSym"sql", newLit("rollback"))),
+          newTree(nnkRaiseStmt, newEmptyNode())
+        )
+        stmts.add newTree(nnkTryStmt, tryBody,
+                          newTree(nnkExceptBranch, ident"Exception", exceptBody))
+        tupleElems.add tmp
+      else:
+        tryBody.add innerExpr
+        tryBody.add newCall(bindSym"exec", ident"db",
+                            newCall(bindSym"sql", newLit("commit")))
+        let exceptBody = newStmtList(
+          newCall(bindSym"exec", ident"db", newCall(bindSym"sql", newLit("rollback"))),
+          newTree(nnkRaiseStmt, newEmptyNode())
+        )
+        stmts.add newTree(nnkTryStmt, tryBody,
+                          newTree(nnkExceptBranch, ident"Exception", exceptBody))
+
+  if tupleElems.len == 0:
+    result = newStmtList()
+    for s in stmts: result.add s
+  elif tupleElems.len == 1:
+    result = newTree(nnkStmtListExpr)
+    for s in stmts: result.add s
+    result.add tupleElems[0]
+  else:
+    let tup = newTree(nnkPar)
+    for e in tupleElems: tup.add e
+    result = newTree(nnkStmtListExpr)
+    for s in stmts: result.add s
+    result.add tup
   when defined(debugOrminDsl):
     macros.hint("Ormin Query: " & repr(result), body)
 

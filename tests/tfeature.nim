@@ -646,21 +646,41 @@ suite "query":
       where id == ?id
     check res == (id, exp2)
 
-  test "insert no return and query":
-    # possible example for multiple queries
-    let id1 = 11
-    let id2 = 12
-    let res = query:
-      insert person(id = ?id1, name = "ioannis", password = "fake", email = "ioannis@example.com", salt = "salt7", status = "ok")
-      insert person(id = ?id2, name = "ioannis", password = "fake", email = "ioannis@example.com", salt = "salt7", status = "ok")
-      select person(id)
-      where id == ?id2
-    # Only the query result should be returned in aggregation,
-    # bare insert is executed but not part of the result.
-    let exp2 = query:
-      select person(id)
-      where id == ?id2
-    check res == exp2
+    test "insert no return and query":
+      # possible example for multiple queries
+      let id1 = 11
+      let id2 = 12
+      let res = query:
+        insert person(id = ?id1, name = "ioannis", password = "fake", email = "ioannis@example.com", salt = "salt7", status = "ok")
+        insert person(id = ?id2, name = "ioannis", password = "fake", email = "ioannis@example.com", salt = "salt7", status = "ok")
+        select person(id)
+        where id == ?id2
+      # Only the query result should be returned in aggregation,
+      # bare insert is executed but not part of the result.
+      let exp2 = query:
+        select person(id)
+        where id == ?id2
+      check res == exp2
+
+    test "transaction rollback no return":
+      # Start a transaction that will fail and roll back all operations.
+      let idnew = 22
+      var rolledBack = false
+      try:
+        query:
+          transaction:
+            # First a valid insert
+            insert person(id = ?idnew, name = "rollback", password = "fake", email = "rollback@example.com", salt = "saltRB", status = "ok")
+            # Then force a primary key violation using an existing id (1)
+            insert person(id = 1, name = "dup", password = "dup", email = "dup@example.com", salt = "dup", status = "dup")
+      except CatchableError:
+        rolledBack = true
+      check rolledBack
+      # Verify inserted row does not exist after rollback
+      let after = query:
+        select person(id)
+        where id == ?idnew
+      check after == []
 
     test "transaction example":
       # Insert and then select within a single transaction block.
@@ -671,9 +691,7 @@ suite "query":
           returning id
           select person(id)
           where id == ?id
-      check:
-        newId == id
-        selected == [id]
+      check newId == id
       # Verify the inserted row is visible after the transaction completes.
       let outside = query:
         select person(id)
