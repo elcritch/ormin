@@ -37,6 +37,7 @@ task test_postgres, "Run PostgreSQL test suite":
   exec "nim c -f -d:nimDebugDlOpen -r -d:postgre tests/tcommon"
   exec "nim c -f -d:nimDebugDlOpen -r -d:release -d:postgre tests/tquery_types"
   exec "nim c -f -d:nimDebugDlOpen -r -d:postgre tests/tpostgre"
+  exec "nim c -f -d:nimDebugDlOpen -r tests/tpostgre_statement_lifecycle"
 
 task buildexamples, "Build examples: chat and forum":
   buildimporterTask()
